@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Gemini Stream</title>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+</head>
+<body>
+  <h1>Gemini Stream</h1>
+  <input type="text" id="prompt" placeholder="Enter your prompt here" />
+  <button id="startBtn">Generate</button>
+  <div id="result"></div>
+
+  <script>
+    let source = null;
+    let sessionId = null;
+
+    document.getElementById("startBtn").addEventListener("click", async () => {
+
+        // 1. POST ke backend buat register session
+      sessionId = "b226a57d-e58a-48c7-b35e-1c3075fc4960";
+      await fetch("http://localhost:8082/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ 
+            session_id: sessionId,
+            last_chat: document.getElementById("prompt").value
+        }),
+      });
+
+      source = new EventSource(`http://localhost:8082/stream/${sessionId}`);
+      let buffer = "";
+      source.onmessage = function(event) {
+        const text = JSON.parse(event.data); // decode
+        if (text === "[DONE]") {
+          // Tutup SSE otomatis
+          source.close();
+          console.log("Stream selesai, SSE ditutup.");
+          // render hasil akhir dengan Markdown
+          return;
+        }
+        // bikin text node baru dari chunk yang masuk
+        buffer += text;
+        
+        console.log("Received chunk:", buffer);
+        // kalau mau tetap lihat progres real-time:
+        document.getElementById("result").innerHTML = marked.parse(buffer);
+      };
+    });
+    
+  </script>
+</body>
+</html>
