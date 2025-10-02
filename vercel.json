@@ -1,11 +1,16 @@
 {
     "version": 2,
     "builds": [
-      {
-        "src": "main.py",
-        "use": "@vercel/python"
-      }
-    ],
+        {
+          "src": "main.py", 
+          "use": "vercel-python",
+          "config": {
+            "runtime": "python3.10" 
+          }
+        }
+      ],
+    "installCommand": "uv pip sync -e . --sys-prefix", 
+    "buildCommand": "uv pip compile pyproject.toml --output-file requirements.txt && uv pip install --no-deps -r requirements.txt",
     "routes": [
       {
         "src": "/(.*)",

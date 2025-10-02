@@ -111,7 +111,12 @@ async def analysis_turbidity():
 async def analysis_turbidity():
     return {"status": "ok", "result": 1000}
 
+
+@app.get("/")
+async def root_call():
+    return {"status": "ok"}
+
 # This is important for Vercel
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8082)
+    uvicorn.run(app, host="0.0.0.0", port=8000)
