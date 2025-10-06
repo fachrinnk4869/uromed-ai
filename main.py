@@ -1,3 +1,4 @@
+from collections import defaultdict
 from contextlib import asynccontextmanager
 import ssl
 from typing import List
@@ -28,7 +29,7 @@ USERNAME = os.environ.get("MQTT_USERNAME")
 PASSWORD = os.environ.get("MQTT_PASSWORD")
 CA_CERT = os.environ.get("MQTT_CA_CERT")
 
-TOPIC_SUB = "uromed/out"
+TOPICS = ["uromed/ph", "uromed/color", "uromed/load_cell"]
 
 
 app.add_middleware(
@@ -82,58 +83,62 @@ Color: {color} is the color of urine\n
 Mass: {mass} is mass of the urine in grams\n
 Velocity: {velocity} is the velocity of urine flow in ml/second\n
 Provide a detailed analysis and suggestions for improvement if necessary. Just answer in short just one paragraph 6 sentence. use bahasa indonesia."""
-
-# Simpan semua koneksi WebSocket yang aktif
-websocket_clients = set()
+# ---------------- DATA STRUCTURES ---------------- #
+topic_subscribers = defaultdict(set)   # {topic: set(WebSocket)}
 
 # ---------------- MQTT CALLBACKS ---------------- #
 
 main_loop = asyncio.get_event_loop()   # 🔹 simpan loop utama FastAPI
 
 
+# ---------------- MQTT CALLBACKS ---------------- #
 def on_connect(client, userdata, flags, rc):
     print("MQTT connected:", rc)
-    client.subscribe(TOPIC_SUB)
+    for t in TOPICS:
+        client.subscribe(t)
+        print(f"Subscribed to topic: {t}")
 
 
 def on_message(client, userdata, msg):
     message = msg.payload.decode()
-    print(f"[MQTT] {msg.topic} => {message}")
-    # Broadcast ke semua WebSocket yang aktif (pakai asyncio loop utama)
-    # Jalankan broadcast di event loop utama
+    topic = msg.topic
+    # print(f"[MQTT] {topic} => {message}")
+
+    # broadcast ke semua ws yang berlangganan ke topic ini
     if main_loop:
         asyncio.run_coroutine_threadsafe(
-            broadcast_message(f"{msg.topic}: {message}"),
+            broadcast_message(topic, message),
             main_loop
         )
 
-# ---------------- FASTAPI WS ---------------- #
 
-
-@app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
+# ---------------- FASTAPI WEBSOCKET ---------------- #
+@app.websocket("/ws/{topic:path}")
+async def websocket_endpoint(websocket: WebSocket, topic: str):
     await websocket.accept()
-    websocket_clients.add(websocket)
+    # topic = "uromed/" + topic
+    print(f"[WS] Client connecting to topic: {topic}")
+    topic_subscribers[topic].add(websocket)
+
     try:
         while True:
-            # Jika frontend kirim data, bisa diproses di sini
             data = await websocket.receive_text()
-            print(f"[WS] Received from client: {data}")
+            print(f"[WS] Received from {topic}: {data}")
     except WebSocketDisconnect:
-        websocket_clients.remove(websocket)
+        topic_subscribers[topic].remove(websocket)
+        print(f"[WS] Client disconnected from topic: {topic}")
 
-# ---------------- Helper broadcast ---------------- #
 
-
-async def broadcast_message(message: str):
+# ---------------- HELPER ---------------- #
+async def broadcast_message(topic: str, message: str):
     disconnected = []
-    for ws in websocket_clients:
+    for ws in topic_subscribers[topic]:
         try:
             await ws.send_text(message)
         except Exception:
             disconnected.append(ws)
     for ws in disconnected:
-        websocket_clients.remove(ws)
+        topic_subscribers[topic].remove(ws)
 # ---------------- MQTT CLIENT INIT ---------------- #
 client = mqtt.Client(client_id=CLIENT_ID)
 client.username_pw_set(USERNAME, PASSWORD)
