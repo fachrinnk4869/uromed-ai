@@ -1,0 +1,222 @@
+<!doctype html>
+
+<html lang="id">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>WS Injector — Last Message</title>
+  <style>
+    body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial; padding: 18px; max-width:800px; margin:auto; }
+    .card { border:1px solid #e0e0e0; border-radius:8px; padding:12px; margin-bottom:12px; box-shadow: 0 1px 2px rgba(0,0,0,0.03); }
+    pre { background:#fafafa; padding:10px; border-radius:6px; white-space:pre-wrap; word-break:break-word; }
+    .status { font-weight:600; }
+    button { margin-right:8px; padding:6px 10px; border-radius:6px; border:1px solid #bbb; background:#fff; cursor:pointer; }
+    button[disabled] { opacity:0.6; cursor:not-allowed; }
+  </style>
+</head>
+<body>
+
+  <h1>WebSocket Injector — Last Message</h1>
+
+  <div class="card">
+    <div><strong>WebSocket URI</strong></div>
+    <input id="wsUri" type="text" value="ws://localhost:8082/ws/ph" style="width:100%; padding:8px; margin-top:6px;"/>
+    <div style="margin-top:8px;">
+      <button id="btnConnect">Connect</button>
+      <button id="btnDisconnect" disabled>Disconnect</button>
+      <button id="btnSend" disabled>Send Test</button>
+      <button id="btnShow" >Show Last</button>
+      <button id="btnClear">Clear Last</button>
+    </div>
+    <div style="margin-top:8px;">
+      Status: <span id="status" class="status">disconnected</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <div><strong>Last message (live)</strong></div>
+    <pre id="lastMsg">—</pre>
+    <small>Stored in <code>window.lastWSMessage</code> and <code>localStorage.lastWSMessage</code></small>
+  </div>
+
+  <div class="card">
+    <div><strong>Console</strong></div>
+    <pre id="log">—</pre>
+  </div>
+
+<script>
+/*
+  Simple JS snippet to inject into an HTML page.
+  - Connects to a WS server
+  - Sends an optional test message
+  - Stores the last received message in:
+      window.lastWSMessage (runtime) and localStorage.lastWSMessage (persistent)
+  - Updates UI and exposes helper functions
+  - Reconnect logic with backoff
+*/
+
+(() => {
+  const logEl = document.getElementById('log');
+  const statusEl = document.getElementById('status');
+  const lastEl = document.getElementById('lastMsg');
+
+  const uriInput = document.getElementById('wsUri');
+  const btnConnect = document.getElementById('btnConnect');
+  const btnDisconnect = document.getElementById('btnDisconnect');
+  const btnSend = document.getElementById('btnSend');
+  const btnShow = document.getElementById('btnShow');
+  const btnClear = document.getElementById('btnClear');
+
+  let ws = null;
+  let reconnectAttempts = 0;
+  let reconnectTimer = null;
+
+  // restore last message from localStorage
+  window.lastWSMessage = localStorage.getItem('lastWSMessage') || null;
+  if (window.lastWSMessage) lastEl.textContent = window.lastWSMessage;
+
+  function log(...args) {
+    const t = new Date().toLocaleTimeString();
+    logEl.textContent = `${t} — ${args.join(' ')}\n` + (logEl.textContent === '—' ? '' : logEl.textContent);
+  }
+
+  function setStatus(s) {
+    statusEl.textContent = s;
+  }
+
+  function storeLast(msg) {
+    window.lastWSMessage = msg;
+    try {
+      localStorage.setItem('lastWSMessage', msg);
+    } catch (e) {
+      console.warn('localStorage set failed', e);
+    }
+    lastEl.textContent = msg;
+  }
+
+  function safeSend(text) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      log('Cannot send, socket not open');
+      return false;
+    }
+    ws.send(text);
+    log('SENT:', text);
+    return true;
+  }
+
+  function connect(uri) {
+    if (ws) {
+      log('Already have WS instance, closing and reconnecting');
+      try { ws.close(); } catch (e){/*ignore*/}
+      ws = null;
+    }
+
+    setStatus('connecting');
+    log('Connecting to', uri);
+    ws = new WebSocket(uri);
+
+    ws.addEventListener('open', () => {
+      setStatus('connected');
+      log('WebSocket open');
+      reconnectAttempts = 0;
+      btnConnect.disabled = true;
+      btnDisconnect.disabled = false;
+      btnSend.disabled = false;
+      // Optionally send a hello
+      safeSend('Hello from injected JS client!');
+    });
+
+    ws.addEventListener('message', (ev) => {
+      const m = ev.data;
+      log('RECV:', m);
+      // store the last message
+      storeLast(m);
+    });
+
+    ws.addEventListener('close', (ev) => {
+      setStatus('disconnected');
+      log('WebSocket closed', ev.code, ev.reason || '');
+      btnConnect.disabled = false;
+      btnDisconnect.disabled = true;
+      btnSend.disabled = true;
+      // try reconnect with backoff
+      scheduleReconnect(uri);
+    });
+
+    ws.addEventListener('error', (ev) => {
+      log('WebSocket error', ev);
+    });
+  }
+
+  function scheduleReconnect(uri) {
+    if (reconnectTimer) return;
+    reconnectAttempts++;
+    const delay = Math.min(60, Math.pow(2, Math.min(reconnectAttempts, 6))) * 1000; // exponential backoff, max 60s
+    log(`Reconnecting in ${delay/1000}s (attempt ${reconnectAttempts})`);
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
+      connect(uri);
+    }, delay);
+  }
+
+  function disconnect() {
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+    if (ws) {
+      ws.close();
+      ws = null;
+    }
+    setStatus('disconnected');
+    btnConnect.disabled = false;
+    btnDisconnect.disabled = true;
+    btnSend.disabled = true;
+    log('Disconnected by user');
+  }
+
+  // UI wiring
+  btnConnect.addEventListener('click', () => {
+    const uri = uriInput.value.trim();
+    if (!uri) return alert('Isi WS URI dulu');
+    connect(uri);
+  });
+
+  btnDisconnect.addEventListener('click', () => disconnect());
+  btnSend.addEventListener('click', () => {
+    const ok = safeSend('Ping from browser at ' + new Date().toISOString());
+    if (!ok) alert('Socket not open');
+  });
+
+  btnShow.addEventListener('click', () => {
+    alert('Last message: ' + (window.lastWSMessage ?? '(none)'));
+  });
+
+  btnClear.addEventListener('click', () => {
+    window.lastWSMessage = null;
+    try { localStorage.removeItem('lastWSMessage'); } catch (e) {}
+    lastEl.textContent = '—';
+    log('Last message cleared');
+  });
+
+  // expose helpers for dev console
+  window.wsInjector = {
+    connect: (u) => connect(u || uriInput.value),
+    disconnect,
+    send: safeSend,
+    last: () => window.lastWSMessage,
+    clear: () => {
+      window.lastWSMessage = null;
+      try { localStorage.removeItem('lastWSMessage'); } catch(e){}
+    }
+  };
+
+  // auto-connect if desired (comment out to disable)
+  // connect(uriInput.value);
+
+})();
+</script>
+
+</body>
+</html>
+

@@ -9,5 +9,6 @@ dependencies = [
     "fastapi>=0.117.1",
     "google-generativeai>=0.8.5",
     "instructor[google-genai]>=1.11.3",
+    "paho-mqtt>=2.1.0",
     "uvicorn>=0.37.0",
 ]

@@ -1,5 +1,10 @@
+from collections import defaultdict
+from contextlib import asynccontextmanager
+import ssl
 from typing import List
-from fastapi import FastAPI, Request
+import asyncio
+import paho.mqtt.client as mqtt
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 import os
 from dotenv import load_dotenv
@@ -16,6 +21,17 @@ model = instructor.from_gemini(
     ),
     mode=instructor.Mode.GEMINI_JSON,
 )
+
+BROKER_HOST = os.environ.get("MQTT_BROKER")
+BROKER_PORT = int(os.environ.get("MQTT_PORT"))
+CLIENT_ID = os.environ.get("MQTT_CLIENT_ID")
+USERNAME = os.environ.get("MQTT_USERNAME")
+PASSWORD = os.environ.get("MQTT_PASSWORD")
+CA_CERT = os.environ.get("MQTT_CA_CERT")
+
+TOPICS = ["uromed/ph", "uromed/color", "uromed/load_cell"]
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -67,6 +83,78 @@ Color: {color} is the color of urine\n
 Mass: {mass} is mass of the urine in grams\n
 Velocity: {velocity} is the velocity of urine flow in ml/second\n
 Provide a detailed analysis and suggestions for improvement if necessary. Just answer in short just one paragraph 6 sentence. use bahasa indonesia."""
+# ---------------- DATA STRUCTURES ---------------- #
+topic_subscribers = defaultdict(set)   # {topic: set(WebSocket)}
+
+# ---------------- MQTT CALLBACKS ---------------- #
+
+main_loop = asyncio.get_event_loop()   # 🔹 simpan loop utama FastAPI
+
+
+# ---------------- MQTT CALLBACKS ---------------- #
+def on_connect(client, userdata, flags, rc):
+    print("MQTT connected:", rc)
+    for t in TOPICS:
+        client.subscribe(t)
+        print(f"Subscribed to topic: {t}")
+
+
+def on_message(client, userdata, msg):
+    message = msg.payload.decode()
+    topic = msg.topic
+    # print(f"[MQTT] {topic} => {message}")
+
+    # broadcast ke semua ws yang berlangganan ke topic ini
+    if main_loop:
+        asyncio.run_coroutine_threadsafe(
+            broadcast_message(topic, message),
+            main_loop
+        )
+
+
+# ---------------- FASTAPI WEBSOCKET ---------------- #
+@app.websocket("/ws/{topic:path}")
+async def websocket_endpoint(websocket: WebSocket, topic: str):
+    await websocket.accept()
+    # topic = "uromed/" + topic
+    print(f"[WS] Client connecting to topic: {topic}")
+    topic_subscribers[topic].add(websocket)
+
+    try:
+        while True:
+            data = await websocket.receive_text()
+            print(f"[WS] Received from {topic}: {data}")
+    except WebSocketDisconnect:
+        topic_subscribers[topic].remove(websocket)
+        print(f"[WS] Client disconnected from topic: {topic}")
+
+
+# ---------------- HELPER ---------------- #
+async def broadcast_message(topic: str, message: str):
+    disconnected = []
+    for ws in topic_subscribers[topic]:
+        try:
+            await ws.send_text(message)
+        except Exception:
+            disconnected.append(ws)
+    for ws in disconnected:
+        topic_subscribers[topic].remove(ws)
+# ---------------- MQTT CLIENT INIT ---------------- #
+client = mqtt.Client(client_id=CLIENT_ID)
+client.username_pw_set(USERNAME, PASSWORD)
+client.on_connect = on_connect
+client.on_message = on_message
+
+# Konfigurasi TLS
+client.tls_set(ca_certs=CA_CERT,
+               tls_version=ssl.PROTOCOL_TLS_CLIENT)
+
+# Bisa tambahkan ini kalau broker pakai self-signed cert:
+# client.tls_insecure_set(True)
+
+client.connect(BROKER_HOST, BROKER_PORT, 60)
+# Jalankan MQTT loop di thread terpisah
+client.loop_start()
 
 
 @app.post("/analysis/ai")
@@ -119,4 +207,6 @@ async def root_call():
 # This is important for Vercel
 if __name__ == "__main__":
     import uvicorn
+    # Ambil event loop utama FastAPI/uvicorn
+    main_loop = asyncio.get_event_loop()
     uvicorn.run(app, host="0.0.0.0", port=8000)
